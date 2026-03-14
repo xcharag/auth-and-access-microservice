@@ -129,6 +129,7 @@ appsettings.*.json
 /Dockerfile
 /docker-compose.jasperserver.yml
 /docker-compose.coolify.yml
+/docker-compose.sqlserver.yml
 
 # Private keys and certificates
 *.pfx

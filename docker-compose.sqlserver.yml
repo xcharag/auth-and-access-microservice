@@ -1,0 +1,59 @@
+# ============================================================
+# COOLIFY DEPLOYMENT - SQL SERVER Docker Compose Stack
+# ============================================================
+# This file is optimized for Coolify deployment
+# Deploy this as a "Docker Compose" application in Coolify
+#
+# NOTES:
+# - This stack deploys SQL Server as a standalone service
+# - Data is persisted in a named Docker volume
+# - Port 1433 is exposed optionally for external tools like
+#   SSMS, DataGrip, Azure Data Studio, etc.
+# - For production, restrict external access by firewall/IP
+# ============================================================
+
+services:
+  # ===========================================
+  # SQL Server 2022
+  # ===========================================
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: sqlserver
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=${DB_SA_PASSWORD}
+      - MSSQL_PID=${MSSQL_PID:-Express}
+    ports:
+      # External access for SSMS / DataGrip / Azure Data Studio
+      # Remove this if only internal Docker access is needed
+      - "${DB_EXTERNAL_PORT:-1433}:1433"
+    expose:
+      - "1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    restart: unless-stopped
+    networks:
+      - sqlserver-network
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"${DB_SA_PASSWORD}\" -C -Q 'SELECT 1' || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 10
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    labels:
+      - coolify.managed=true
+      - traefik.enable=false
+
+networks:
+  sqlserver-network:
+    driver: bridge
+    name: sqlserver-network
+
+volumes:
+  sqlserver-data:
+    driver: local
+    name: sqlserver-data
