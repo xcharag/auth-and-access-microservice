@@ -1,0 +1,68 @@
+# ============================================================
+# COOLIFY DEPLOYMENT - SISAPI Docker Compose Stack
+# ============================================================
+# This file is optimized for Coolify deployment on a VPS
+# where SQL Server already exists (external database).
+#
+# NO SQL Server service is created here — uses existing instance.
+# NO JasperServer — will be added later when needed.
+#
+# REQUIRED ENV VARS (set in Coolify or .env file):
+#   DB_HOST            - SQL Server host (IP or hostname)
+#   DB_PORT            - SQL Server port (default: 1433)
+#   DB_NAME            - Database name (default: sisapi)
+#   DB_USER            - Database user (default: sa)
+#   DB_PASSWORD        - Database password
+#   JWT_SECRET_KEY     - JWT signing key (min 32 chars)
+#   ALLOWED_ORIGINS    - Comma-separated allowed CORS origins
+#   COOKIE_DOMAIN      - Cookie domain for cross-subdomain auth
+#   APP_DOMAIN         - Domain for Traefik routing (e.g., api.yourdomain.com)
+# ============================================================
+
+services:
+  # ===========================================
+  # SIS API - .NET 9 Web API (Main Application)
+  # ===========================================
+  sisapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Coolify handles routing via reverse proxy
+    expose:
+      - "8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      - ASPNETCORE_URLS=http://+:8080
+      # Database Connection (external SQL Server - already running on VPS or remote)
+      - ConnectionStrings__CoreConnection=Server=${DB_HOST:-localhost},${DB_PORT:-1433};Database=${DB_NAME:-sisapi};User Id=${DB_USER:-sa};Password=${DB_PASSWORD};TrustServerCertificate=True;MultipleActiveResultSets=True
+      # JWT Settings
+      - JwtSettings__SecretKey=${JWT_SECRET_KEY}
+      - JwtSettings__Issuer=${JWT_ISSUER:-SisApi}
+      - JwtSettings__Audience=${JWT_AUDIENCE:-SisApiClient}
+      - JwtSettings__ExpiryInMinutes=${JWT_EXPIRY_MINUTES:-10}
+      - JwtSettings__RefreshTokenExpiryInDays=${JWT_REFRESH_EXPIRY_DAYS:-7}
+      - JwtSettings__RememberMeRefreshTokenExpiryInDays=${JWT_REMEMBER_ME_EXPIRY_DAYS:-365}
+      # CORS Settings
+      - AllowedOrigins=${ALLOWED_ORIGINS}
+      # Cookie Domain for cross-subdomain authentication
+      - CookieDomain=${COOKIE_DOMAIN}
+    restart: unless-stopped
+    networks:
+      - coolify
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+    labels:
+      - coolify.managed=true
+      - traefik.enable=true
+      - "traefik.http.routers.sisapi.rule=Host(`${APP_DOMAIN}`)"
+      - traefik.http.routers.sisapi.entryPoints=http
+      - traefik.docker.network=coolify
+
+networks:
+  coolify:
+    external: true
+    name: coolify  # Coolify's default network for Traefik routing

@@ -126,9 +126,7 @@ appsettings.*.json
 /sisapi/appsettings.Development.json
 /sisapi/appsettings.Production.json
 /docs
-/Dockerfile
 /docker-compose.jasperserver.yml
-/docker-compose.coolify.yml
 /docker-compose.sqlserver.yml
 
 # Private keys and certificates
