@@ -49,6 +49,7 @@ services:
     restart: unless-stopped
     networks:
       - coolify
+      - sqlserver-network
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -66,3 +67,6 @@ networks:
   coolify:
     external: true
     name: coolify  # Coolify's default network for Traefik routing
+  sqlserver-network:
+    external: true
+    name: sqlserver-network  # Network created by the SQL Server stack
