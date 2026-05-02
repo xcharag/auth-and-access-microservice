@@ -1,6 +1,8 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.CookiePolicy;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -13,6 +15,54 @@ using sisapi.infrastructure.Services;
 var builder = WebApplication.CreateBuilder(args);
 var cookieDomain = builder.Configuration["CookieDomain"] ?? ".xchar.site";
 var cookieName = builder.Configuration["Authentication:CookieName"] ?? "SisApi.Auth";
+
+// ── Forwarded Headers (required behind Traefik / any reverse proxy) ──
+// Without this, the app thinks requests are HTTP (Traefik terminates TLS),
+// which can break Secure cookie handling and URL generation.
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor
+                             | ForwardedHeaders.XForwardedProto
+                             | ForwardedHeaders.XForwardedHost;
+    options.KnownNetworks.Clear();
+    options.KnownProxies.Clear();
+});
+
+// ── Global Cookie Policy ──
+// Forces ALL cookies emitted by this API to use the correct cross-site attributes.
+// This is a safety net on top of AuthController.BuildCookieOptions.
+builder.Services.Configure<CookiePolicyOptions>(options =>
+{
+    options.MinimumSameSitePolicy = SameSiteMode.Unspecified;
+    options.Secure = CookieSecurePolicy.Always;
+    options.HttpOnly = HttpOnlyPolicy.Always;
+    options.OnAppendCookie = ctx =>
+    {
+        ctx.CookieOptions.Secure = true;
+        ctx.CookieOptions.SameSite = SameSiteMode.None;
+
+        var host = ctx.Context.Request.Host.Host;
+        if (!string.IsNullOrWhiteSpace(cookieDomain)
+            && !host.Contains("localhost", StringComparison.OrdinalIgnoreCase)
+            && !host.StartsWith("127."))
+        {
+            ctx.CookieOptions.Domain = cookieDomain;
+        }
+    };
+    options.OnDeleteCookie = ctx =>
+    {
+        ctx.CookieOptions.Secure = true;
+        ctx.CookieOptions.SameSite = SameSiteMode.None;
+
+        var host = ctx.Context.Request.Host.Host;
+        if (!string.IsNullOrWhiteSpace(cookieDomain)
+            && !host.Contains("localhost", StringComparison.OrdinalIgnoreCase)
+            && !host.StartsWith("127."))
+        {
+            ctx.CookieOptions.Domain = cookieDomain;
+        }
+    };
+});
 
 builder.Services.AddDbContext<CoreDbContext>(options =>
     options.UseSqlServer(
@@ -93,6 +143,10 @@ builder.Services.AddAuthentication(options =>
             OnAuthenticationFailed = context =>
             {
                 Console.WriteLine($"JWT Authentication Failed: {context.Exception.Message}");
+                if (context.Exception is SecurityTokenExpiredException)
+                {
+                    context.Response.Headers.Append("Token-Expired", "true");
+                }
                 return Task.CompletedTask;
             },
             OnTokenValidated = _ =>
@@ -164,7 +218,8 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(allowedOrigins)
             .AllowAnyHeader()
             .AllowAnyMethod()
-            .AllowCredentials();
+            .AllowCredentials()
+            .WithExposedHeaders("Token-Expired");
     });
     
     options.AddPolicy("FrontendDev", policy =>
@@ -172,7 +227,8 @@ builder.Services.AddCors(options =>
         policy.WithOrigins("https://localhost:5173", "http://localhost:5173")
             .AllowAnyHeader()
             .AllowAnyMethod()
-            .AllowCredentials();
+            .AllowCredentials()
+            .WithExposedHeaders("Token-Expired");
     });
 });
 
@@ -242,6 +298,12 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
+// ── MUST be first: tells ASP.NET the real scheme is HTTPS (Traefik terminates TLS) ──
+app.UseForwardedHeaders();
+
+// ── Forces Domain / SameSite / Secure on every cookie this API emits ──
+app.UseCookiePolicy();
+
 var corsPolicy = app.Environment.IsDevelopment() ? "FrontendDev" : "ProductionPolicy";
 Console.WriteLine("=".PadRight(60, '='));
 Console.WriteLine($"Active CORS Policy: {corsPolicy}");
@@ -256,7 +318,7 @@ using (var scope = app.Services.CreateScope())
     try
     {
         var context = services.GetRequiredService<CoreDbContext>();
-        
+
         logger.LogInformation("Applying database migrations...");
         await context.Database.MigrateAsync();
         logger.LogInformation("Database migrations applied successfully.");
@@ -281,6 +343,42 @@ app.UseSwaggerUI(c =>
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }))
     .AllowAnonymous();
+
+// ── Debug: what auth info does the API actually receive? ──
+app.MapGet("/debug/auth", (HttpContext ctx) =>
+{
+    var hasAccessToken = ctx.Request.Cookies.ContainsKey("accessToken");
+    var hasRefreshToken = ctx.Request.Cookies.ContainsKey("refreshToken");
+    var authHeader = ctx.Request.Headers["Authorization"].FirstOrDefault();
+
+    return Results.Ok(new
+    {
+        origin       = ctx.Request.Headers["Origin"].FirstOrDefault(),
+        host         = ctx.Request.Host.ToString(),
+        scheme       = ctx.Request.Scheme,
+        isHttps      = ctx.Request.IsHttps,
+        isAuthenticated = ctx.User.Identity?.IsAuthenticated ?? false,
+        tokenSources = new { accessTokenCookie = hasAccessToken, refreshTokenCookie = hasRefreshToken, authorizationHeader = authHeader ?? "<missing>" },
+        allCookieNames = ctx.Request.Cookies.Keys.ToList(),
+        cookieDomainConfig = cookieDomain,
+        hint = !hasAccessToken && string.IsNullOrEmpty(authHeader)
+            ? "No accessToken cookie received. Verify the cookie was set with Domain=.xchar.site and SameSite=None. Call POST /api/Auth/cookie/refresh-token to renew."
+            : (ctx.User.Identity?.IsAuthenticated ?? false) ? "Authenticated OK." : "Token found but validation failed — may be expired, call cookie/refresh-token."
+    });
+}).AllowAnonymous();
+
+// ── Debug: active CORS & cookie configuration ──
+app.MapGet("/debug/cors", (IConfiguration config) =>
+{
+    var origins = config["AllowedOrigins"]?.Split(',', StringSplitOptions.RemoveEmptyEntries) ?? [];
+    return Results.Ok(new
+    {
+        allowedOrigins = origins,
+        cookieDomain   = config["CookieDomain"],
+        environment    = app.Environment.EnvironmentName,
+        activePolicy   = corsPolicy
+    });
+}).AllowAnonymous();
 
 if (!app.Environment.IsProduction())
 {

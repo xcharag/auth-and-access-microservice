@@ -2,32 +2,38 @@
 # COOLIFY DEPLOYMENT - SISAPI Docker Compose Stack
 # ============================================================
 # This file is optimized for Coolify deployment on a VPS
-# where SQL Server already exists (external database).
+# where SQL Server ALREADY EXISTS (external database).
 #
-# NO SQL Server service is created here — uses existing instance.
+# NO SQL Server container is created here.
 # NO JasperServer — will be added later when needed.
 #
-# REQUIRED ENV VARS (set in Coolify or .env file):
-#   DB_HOST            - SQL Server host (IP or hostname)
+# ── DB_HOST — how to reach SQL Server from inside the container ──
+#   "host.docker.internal" → SQL Server on the SAME VPS host OS
+#   "172.17.0.1"           → Docker bridge gateway (alternative)
+#   "<actual-IP>"          → SQL Server on a REMOTE server
+#   "sqlserver"            → ONLY if SQL Server is a Docker container
+#                             on the SAME Docker network (sqlserver-network)
+#
+#   ⚠️  DO NOT use "localhost" — inside the container that means
+#       the container itself, not the host.
+#
+# REQUIRED ENV VARS (set in Coolify UI):
+#   DB_HOST            - See above (default: host.docker.internal)
 #   DB_PORT            - SQL Server port (default: 1433)
 #   DB_NAME            - Database name (default: sisapi)
 #   DB_USER            - Database user (default: sa)
 #   DB_PASSWORD        - Database password
 #   JWT_SECRET_KEY     - JWT signing key (min 32 chars)
 #   ALLOWED_ORIGINS    - Comma-separated allowed CORS origins
-#   COOKIE_DOMAIN      - Cookie domain for cross-subdomain auth
-#   APP_DOMAIN         - Domain for Traefik routing (e.g., api.yourdomain.com)
+#   COOKIE_DOMAIN      - e.g. .xchar.site (with leading dot)
+#   APP_DOMAIN         - Domain for Traefik (e.g. sisapinibu.xchar.site)
 # ============================================================
 
 services:
-  # ===========================================
-  # SIS API - .NET 9 Web API (Main Application)
-  # ===========================================
   sisapi:
     build:
       context: .
       dockerfile: Dockerfile
-    # Coolify handles routing via reverse proxy
     expose:
       - "8080"
     environment:
@@ -42,9 +48,11 @@ services:
       - JwtSettings__ExpiryInMinutes=${JWT_EXPIRY_MINUTES:-10}
       - JwtSettings__RefreshTokenExpiryInDays=${JWT_REFRESH_EXPIRY_DAYS:-7}
       - JwtSettings__RememberMeRefreshTokenExpiryInDays=${JWT_REMEMBER_ME_EXPIRY_DAYS:-365}
-      # CORS Settings
+      # Internal service-to-service API key
+      - InternalApiKey=${INTERNAL_API_KEY}
+      # CORS
       - AllowedOrigins=${ALLOWED_ORIGINS}
-      # Cookie Domain for cross-subdomain authentication
+      # Cookie domain for cross-subdomain auth (e.g. .xchar.site)
       - CookieDomain=${COOKIE_DOMAIN}
     restart: unless-stopped
     networks:
@@ -70,3 +78,4 @@ networks:
   sqlserver-network:
     external: true
     name: sqlserver-network  # Network created by the SQL Server stack
+
