@@ -6,6 +6,7 @@ namespace sisapi.application.Contracts;
 public interface IAuthService
 {
     Task<ApiResponseDto<AuthResponseDto>> RegisterAsync(RegisterRequestDto request);
+    Task<ApiResponseDto<AuthResponseDto>> ProvisionInternalUserAsync(InternalProvisionUserRequestDto request);
     Task<ApiResponseDto<AuthResponseDto>> LoginAsync(LoginRequestDto request);
     Task<ApiResponseDto<AuthResponseDto>> RefreshTokenAsync(string refreshToken);
     Task<ApiResponseDto<bool>> LogoutAsync(string refreshToken);
@@ -14,5 +15,8 @@ public interface IAuthService
     Task<ApiResponseDto<bool>> RemoveRoleFromUserAsync(int userId, string roleName);
     Task<ApiResponseDto<bool>> SoftDeleteUserAsync(int userId);
     Task<ApiResponseDto<bool>> RestoreUserAsync(int userId);
+    Task<ApiResponseDto<bool>> ConfirmEmailInternalAsync(int userId);
+    Task<ApiResponseDto<bool>> DeleteInternalUserAsync(int userId);
     Task<ApiResponseDto<bool>> VerifyPermissionAsync(int userId, string module, string controller, string action, int typePermission = 0);
+    Task<ApiResponseDto<bool>> SetPasswordInternalAsync(int userId, string newPassword);
 }

@@ -23,6 +23,7 @@ public class DatabaseSeeder
     {
         await SeedControllerPermissionsAsync();
         await SeedAdminRoleAsync();
+        await SeedNibuAppUserRoleAsync();
         await SeedAdminUserAsync();
     }
 
@@ -128,6 +129,27 @@ public class DatabaseSeeder
         }
 
         await _context.SaveChangesAsync();
+    }
+
+    private async Task SeedNibuAppUserRoleAsync()
+    {
+        const string appUserRoleName = "NibuAppUser";
+
+        if (await _roleManager.RoleExistsAsync(appUserRoleName))
+        {
+            return;
+        }
+
+        var role = new Role
+        {
+            Name = appUserRoleName,
+            NormalizedName = appUserRoleName.ToUpperInvariant(),
+            Description = "Default role for NIBU mobile application users",
+            Active = true,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        await _roleManager.CreateAsync(role);
     }
 
     private async Task SeedAdminUserAsync()

@@ -35,6 +35,59 @@ public class AuthController(IAuthService authService, IConfiguration configurati
     }
 
     /// <summary>
+    /// Provision a credential record for another trusted microservice.
+    /// </summary>
+    [HttpPost("internal/users")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ProvisionInternalUser([FromBody] InternalProvisionUserRequestDto request)
+    {
+        if (!IsInternalRequest())
+        {
+            return Unauthorized(new { Success = false, Message = "Invalid internal API key" });
+        }
+
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ModelState);
+        }
+
+        var result = await authService.ProvisionInternalUserAsync(request);
+        return result.Success ? Ok(result) : BadRequest(result);
+    }
+
+    /// <summary>
+    /// Mark a credential record as email-confirmed after verification in the owning service.
+    /// </summary>
+    [HttpPost("internal/users/{userId:int}/confirm-email")]
+    [AllowAnonymous]
+    public async Task<IActionResult> ConfirmInternalUserEmail(int userId)
+    {
+        if (!IsInternalRequest())
+        {
+            return Unauthorized(new { Success = false, Message = "Invalid internal API key" });
+        }
+
+        var result = await authService.ConfirmEmailInternalAsync(userId);
+        return result.Success ? Ok(result) : BadRequest(result);
+    }
+
+    /// <summary>
+    /// Deactivate a credential record after a failed cross-service registration.
+    /// </summary>
+    [HttpDelete("internal/users/{userId:int}")]
+    [AllowAnonymous]
+    public async Task<IActionResult> DeleteInternalUser(int userId)
+    {
+        if (!IsInternalRequest())
+        {
+            return Unauthorized(new { Success = false, Message = "Invalid internal API key" });
+        }
+
+        var result = await authService.DeleteInternalUserAsync(userId);
+        return result.Success ? Ok(result) : BadRequest(result);
+    }
+
+    /// <summary>
     /// Login user with username or email and generate JWT token
     /// </summary>
     [HttpPost("login")]
@@ -241,6 +294,27 @@ public class AuthController(IAuthService authService, IConfiguration configurati
      }
  
     /// <summary>
+    /// Set a new password for an internal user (called by trusted microservices).
+    /// </summary>
+    [HttpPost("internal/users/{userId:int}/set-password")]
+    [AllowAnonymous]
+    public async Task<IActionResult> SetInternalUserPassword(int userId, [FromBody] SetPasswordRequestDto request)
+    {
+        if (!IsInternalRequest())
+        {
+            return Unauthorized(new { Success = false, Message = "Invalid internal API key" });
+        }
+
+        if (!ModelState.IsValid || string.IsNullOrWhiteSpace(request?.NewPassword))
+        {
+            return BadRequest(new { Success = false, Message = "newPassword is required" });
+        }
+
+        var result = await authService.SetPasswordInternalAsync(userId, request.NewPassword);
+        return result.Success ? Ok(result) : BadRequest(result);
+    }
+
+    /// <summary>
     /// Assign a role to a user
     /// </summary>
     [HttpPost("assign-role")]
@@ -424,5 +498,18 @@ public class AuthController(IAuthService authService, IConfiguration configurati
         }
 
         return configuredDomain;
+    }
+
+    private bool IsInternalRequest()
+    {
+        var configuredKey = configuration["InternalApiKey"];
+        if (string.IsNullOrWhiteSpace(configuredKey))
+        {
+            return false;
+        }
+
+        var suppliedKey = Request.Headers["X-Internal-Api-Key"].FirstOrDefault();
+        return !string.IsNullOrWhiteSpace(suppliedKey)
+               && string.Equals(suppliedKey, configuredKey, StringComparison.Ordinal);
     }
  }
