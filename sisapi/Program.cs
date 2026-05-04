@@ -317,6 +317,11 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+// ── Version: read from the env var baked into the image at build time ──
+// This value is set by `ENV APP_VERSION=${VERSION}` in the Dockerfile, so it always
+// reflects the actual image version — it cannot be accidentally overridden at runtime.
+var appVersion = Environment.GetEnvironmentVariable("APP_VERSION") ?? "dev";
+
 var app = builder.Build();
 
 // ── MUST be first: tells ASP.NET the real scheme is HTTPS (Traefik terminates TLS) ──
@@ -362,7 +367,7 @@ app.UseSwaggerUI(c =>
     c.RoutePrefix = "swagger"; 
 });
 
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }))
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", version = appVersion, timestamp = DateTime.UtcNow }))
     .AllowAnonymous();
 
 // ── Debug: what auth info does the API actually receive? ──
@@ -415,7 +420,7 @@ app.MapControllers();
 
 try
 {
-    Log.Information("Iniciando sisapi...");
+    Log.Information("Iniciando sisapi v{Version}...", appVersion);
     app.Run();
 }
 catch (Exception ex)

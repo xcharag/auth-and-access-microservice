@@ -46,6 +46,11 @@ LABEL org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.title="sisapi" \
       org.opencontainers.image.description="SisApi — Servicio de autenticación y acceso"
 
+# Bake the version into the image as an env var so the app can read it at runtime.
+# This is the single source of truth: it cannot be overridden without rebuilding the image
+# (unlike a runtime env var that can be set to an incorrect value externally).
+ENV APP_VERSION=${VERSION}
+
 WORKDIR /app
 
 # Instalar curl para el health check
