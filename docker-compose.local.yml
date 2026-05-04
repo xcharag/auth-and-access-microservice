@@ -49,11 +49,14 @@ services:
   # Aplicativo sisapi — compilado desde el código local
   # ==========================================================
   sisapi-nibu:
+    # When APP_VERSION is set, Docker Compose uses the already-built image (sisapi-nibu:3.1.0).
+    # When APP_VERSION is not set, it builds from source with version "local-dev".
+    image: sisapi-nibu:${APP_VERSION:-local-dev}
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        VERSION: local-dev
+        VERSION: ${APP_VERSION:-local-dev}
     container_name: sisapi-nibu-local
     env_file: ./credenciales.local.env
     ports:

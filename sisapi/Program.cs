@@ -286,10 +286,19 @@ builder.Services.AddScoped<sisapi.application.Services.Reports.Strategies.Compan
 
 builder.Services.AddControllers();
 
+// ── Version: read from the env var baked into the image at build time ──
+// Set by `ENV APP_VERSION=${VERSION}` in the Dockerfile — cannot be overridden at runtime.
+var appVersion = Environment.GetEnvironmentVariable("APP_VERSION") ?? "dev";
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
-    options.SwaggerDoc("v1", new OpenApiInfo { Title = "SisApi", Version = "v1" });
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "SisApi",
+        Version = appVersion,
+        Description = $"Servicio de autenticación y acceso · v{appVersion}"
+    });
 
    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
@@ -317,10 +326,6 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-// ── Version: read from the env var baked into the image at build time ──
-// This value is set by `ENV APP_VERSION=${VERSION}` in the Dockerfile, so it always
-// reflects the actual image version — it cannot be accidentally overridden at runtime.
-var appVersion = Environment.GetEnvironmentVariable("APP_VERSION") ?? "dev";
 
 var app = builder.Build();
 
@@ -363,7 +368,7 @@ using (var scope = app.Services.CreateScope())
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "SisApi v1");
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", $"SisApi v{appVersion}");
     c.RoutePrefix = "swagger"; 
 });
 
@@ -414,7 +419,7 @@ if (!app.Environment.IsProduction())
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health/ready");
 
 app.MapControllers();
 
