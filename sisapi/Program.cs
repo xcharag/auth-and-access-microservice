@@ -11,8 +11,29 @@ using Microsoft.OpenApi.Models;
 using sisapi.infrastructure.Authorization;
 using sisapi.infrastructure.Context.Core;
 using sisapi.infrastructure.Services;
+using Serilog;
+using Serilog.Events;
+// ── Configuración de Serilog: escribe a consola Y a archivo rotativo diario ──
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
+    .Enrich.FromLogContext()
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .WriteTo.File(
+        path: "/app/logs/sisapi-.log",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .CreateLogger();
+
+// Necesario para que Npgsql trate todos los DateTime igual que antes (sin distinción por DateTimeKind)
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Reemplazar el proveedor de logging predeterminado con Serilog
+builder.Host.UseSerilog();
 var cookieDomain = builder.Configuration["CookieDomain"] ?? ".xchar.site";
 var cookieName = builder.Configuration["Authentication:CookieName"] ?? "SisApi.Auth";
 
@@ -65,13 +86,13 @@ builder.Services.Configure<CookiePolicyOptions>(options =>
 });
 
 builder.Services.AddDbContext<CoreDbContext>(options =>
-    options.UseSqlServer(
+    options.UseNpgsql(
         builder.Configuration.GetConnectionString("CoreConnection"),
-        sqlServerOptions => sqlServerOptions
+        npgsqlOptions => npgsqlOptions
             .EnableRetryOnFailure(
                 maxRetryCount: 10,
                 maxRetryDelay: TimeSpan.FromSeconds(30),
-                errorNumbersToAdd: null)
+                errorCodesToAdd: null)
             .CommandTimeout(60)));
 
 builder.Services.AddIdentity<User, Role>(options =>
@@ -233,10 +254,10 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddHealthChecks()
-    .AddSqlServer(
+    .AddNpgSql(
         connectionString: builder.Configuration.GetConnectionString("CoreConnection") ?? "",
         name: "database",
-        tags: new[] { "db", "sql", "sqlserver" }
+        tags: new[] { "db", "sql", "npgsql" }
     );
 
 builder.Services.AddHttpContextAccessor();
@@ -392,5 +413,19 @@ app.MapHealthChecks("/health");
 
 app.MapControllers();
 
-app.Run();
+try
+{
+    Log.Information("Iniciando sisapi...");
+    app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "La aplicación terminó inesperadamente.");
+    throw;
+}
+finally
+{
+    // Asegura que todos los logs pendientes sean escritos al archivo antes de cerrar
+    Log.CloseAndFlush();
+}
 
