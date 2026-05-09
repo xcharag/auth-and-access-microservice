@@ -5,11 +5,13 @@ using Microsoft.AspNetCore.CookiePolicy;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.IdentityModel.Tokens;
 using sisapi.domain.Entities;
 using Microsoft.OpenApi.Models;
 using sisapi.infrastructure.Authorization;
 using sisapi.infrastructure.Context.Core;
+using sisapi.infrastructure.Migrations;
 using sisapi.infrastructure.Services;
 using Serilog;
 using Serilog.Events;
@@ -27,8 +29,6 @@ Log.Logger = new LoggerConfiguration()
         outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
     .CreateLogger();
 
-// Necesario para que Npgsql trate todos los DateTime igual que antes (sin distinción por DateTimeKind)
-AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -85,15 +85,40 @@ builder.Services.Configure<CookiePolicyOptions>(options =>
     };
 });
 
-builder.Services.AddDbContext<CoreDbContext>(options =>
-    options.UseNpgsql(
-        builder.Configuration.GetConnectionString("CoreConnection"),
-        npgsqlOptions => npgsqlOptions
-            .EnableRetryOnFailure(
-                maxRetryCount: 10,
-                maxRetryDelay: TimeSpan.FromSeconds(30),
-                errorCodesToAdd: null)
-            .CommandTimeout(60)));
+// ── Database provider: "SqlServer" or "PostgreSQL" (default: SqlServer) ──
+// Override via env var:  DatabaseProvider=PostgreSQL
+// Docker compose files set this automatically via credenciales.*.env
+var dbProvider = builder.Configuration["DatabaseProvider"] ?? "SqlServer";
+var connectionString = builder.Configuration.GetConnectionString("CoreConnection")
+                       ?? throw new InvalidOperationException("CoreConnection is not configured");
+
+Console.WriteLine($"Database provider: {dbProvider}");
+
+if (dbProvider == "PostgreSQL")
+{
+    // Npgsql: treat all DateTime as UTC (no DateTimeKind distinction)
+    AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+    builder.Services.AddDbContext<CoreDbContext>(options =>
+        options.UseNpgsql(
+            connectionString,
+            npgsqlOptions => npgsqlOptions
+                .MigrationsAssembly("sisapi.infrastructure")
+                .EnableRetryOnFailure(maxRetryCount: 10, maxRetryDelay: TimeSpan.FromSeconds(30), errorCodesToAdd: null)
+                .CommandTimeout(60))
+        .ReplaceService<IMigrationsAssembly, ProviderMigrationsAssembly>());
+}
+else
+{
+    // SQL Server (original provider — used for local dev against existing MSSQL DB)
+    builder.Services.AddDbContext<CoreDbContext>(options =>
+        options.UseSqlServer(
+            connectionString,
+            sqlOptions => sqlOptions
+                .MigrationsAssembly("sisapi.infrastructure")
+                .EnableRetryOnFailure(maxRetryCount: 10, maxRetryDelay: TimeSpan.FromSeconds(30), errorNumbersToAdd: null)
+                .CommandTimeout(60))
+        .ReplaceService<IMigrationsAssembly, ProviderMigrationsAssembly>());
+}
 
 builder.Services.AddIdentity<User, Role>(options =>
     {
@@ -253,12 +278,21 @@ builder.Services.AddCors(options =>
     });
 });
 
-builder.Services.AddHealthChecks()
-    .AddNpgSql(
-        connectionString: builder.Configuration.GetConnectionString("CoreConnection") ?? "",
+var healthChecksBuilder = builder.Services.AddHealthChecks();
+if (dbProvider == "PostgreSQL")
+{
+    healthChecksBuilder.AddNpgSql(
+        connectionString: connectionString,
         name: "database",
-        tags: new[] { "db", "sql", "npgsql" }
-    );
+        tags: new[] { "db", "sql", "npgsql" });
+}
+else
+{
+    healthChecksBuilder.AddSqlServer(
+        connectionString: connectionString,
+        name: "database",
+        tags: new[] { "db", "sql", "sqlserver" });
+}
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient();
@@ -350,10 +384,45 @@ using (var scope = app.Services.CreateScope())
     {
         var context = services.GetRequiredService<CoreDbContext>();
 
-        logger.LogInformation("Applying database migrations...");
-        await context.Database.MigrateAsync();
-        logger.LogInformation("Database migrations applied successfully.");
-        
+        if (dbProvider == "PostgreSQL")
+        {
+            // PostgreSQL: auto-apply migrations on startup (creates schema on fresh installs)
+            logger.LogInformation("Applying database migrations (PostgreSQL)...");
+            await context.Database.MigrateAsync();
+            logger.LogInformation("Database migrations applied successfully.");
+        }
+        else
+        {
+            // SQL Server: schema is managed externally via the existing migrations.
+            // Only verify connectivity — do NOT call MigrateAsync (snapshot mismatch due to provider switch).
+            logger.LogInformation("SQL Server mode: skipping auto-migration (schema managed externally).");
+            
+            // Mask password in log for security
+            var rawCs = connectionString;
+            var maskedCs = System.Text.RegularExpressions.Regex.Replace(
+                rawCs, @"(Password|PWD)=([^;]+)", "$1=***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            logger.LogInformation("Connecting to: {ConnectionString}", maskedCs);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                var canConnect = await context.Database.CanConnectAsync(cts.Token);
+                if (!canConnect)
+                    logger.LogWarning("SQL Server connection returned false — DB may be unavailable. App will start but DB-dependent endpoints will fail.");
+                else
+                    logger.LogInformation("SQL Server connection verified successfully.");
+            }
+            catch (OperationCanceledException)
+            {
+                logger.LogWarning("SQL Server connection timed out after 15s. App will start but DB-dependent endpoints will fail. Check firewall/VPN access to the SQL Server host.");
+            }
+            catch (Exception dbEx)
+            {
+                logger.LogWarning(dbEx, "SQL Server connection failed. App will start but DB-dependent endpoints will fail.");
+            }
+        }
+
         var seeder = services.GetRequiredService<DatabaseSeeder>();
         await seeder.SeedAsync();
         logger.LogInformation("Database seeding completed successfully.");

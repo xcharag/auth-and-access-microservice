@@ -1,10 +1,10 @@
-﻿using System;
+using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 #nullable disable
 
-namespace sisapi.infrastructure.Migrations
+namespace sisapi.infrastructure.Migrations.PostgreSQL
 {
     /// <inheritdoc />
     public partial class InitialPostgres : Migration
