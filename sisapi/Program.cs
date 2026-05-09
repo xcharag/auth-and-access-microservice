@@ -5,14 +5,35 @@ using Microsoft.AspNetCore.CookiePolicy;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.IdentityModel.Tokens;
 using sisapi.domain.Entities;
 using Microsoft.OpenApi.Models;
 using sisapi.infrastructure.Authorization;
 using sisapi.infrastructure.Context.Core;
+using sisapi.infrastructure.Migrations;
 using sisapi.infrastructure.Services;
+using Serilog;
+using Serilog.Events;
+// ── Configuración de Serilog: escribe a consola Y a archivo rotativo diario ──
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.Hosting.Lifetime", LogEventLevel.Information)
+    .Enrich.FromLogContext()
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .WriteTo.File(
+        path: "/app/logs/sisapi-.log",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30,
+        outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .CreateLogger();
+
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Reemplazar el proveedor de logging predeterminado con Serilog
+builder.Host.UseSerilog();
 var cookieDomain = builder.Configuration["CookieDomain"] ?? ".xchar.site";
 var cookieName = builder.Configuration["Authentication:CookieName"] ?? "SisApi.Auth";
 
@@ -64,15 +85,40 @@ builder.Services.Configure<CookiePolicyOptions>(options =>
     };
 });
 
-builder.Services.AddDbContext<CoreDbContext>(options =>
-    options.UseSqlServer(
-        builder.Configuration.GetConnectionString("CoreConnection"),
-        sqlServerOptions => sqlServerOptions
-            .EnableRetryOnFailure(
-                maxRetryCount: 10,
-                maxRetryDelay: TimeSpan.FromSeconds(30),
-                errorNumbersToAdd: null)
-            .CommandTimeout(60)));
+// ── Database provider: "SqlServer" or "PostgreSQL" (default: SqlServer) ──
+// Override via env var:  DatabaseProvider=PostgreSQL
+// Docker compose files set this automatically via credenciales.*.env
+var dbProvider = builder.Configuration["DatabaseProvider"] ?? "SqlServer";
+var connectionString = builder.Configuration.GetConnectionString("CoreConnection")
+                       ?? throw new InvalidOperationException("CoreConnection is not configured");
+
+Console.WriteLine($"Database provider: {dbProvider}");
+
+if (dbProvider == "PostgreSQL")
+{
+    // Npgsql: treat all DateTime as UTC (no DateTimeKind distinction)
+    AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+    builder.Services.AddDbContext<CoreDbContext>(options =>
+        options.UseNpgsql(
+            connectionString,
+            npgsqlOptions => npgsqlOptions
+                .MigrationsAssembly("sisapi.infrastructure")
+                .EnableRetryOnFailure(maxRetryCount: 10, maxRetryDelay: TimeSpan.FromSeconds(30), errorCodesToAdd: null)
+                .CommandTimeout(60))
+        .ReplaceService<IMigrationsAssembly, ProviderMigrationsAssembly>());
+}
+else
+{
+    // SQL Server (original provider — used for local dev against existing MSSQL DB)
+    builder.Services.AddDbContext<CoreDbContext>(options =>
+        options.UseSqlServer(
+            connectionString,
+            sqlOptions => sqlOptions
+                .MigrationsAssembly("sisapi.infrastructure")
+                .EnableRetryOnFailure(maxRetryCount: 10, maxRetryDelay: TimeSpan.FromSeconds(30), errorNumbersToAdd: null)
+                .CommandTimeout(60))
+        .ReplaceService<IMigrationsAssembly, ProviderMigrationsAssembly>());
+}
 
 builder.Services.AddIdentity<User, Role>(options =>
     {
@@ -232,12 +278,21 @@ builder.Services.AddCors(options =>
     });
 });
 
-builder.Services.AddHealthChecks()
-    .AddSqlServer(
-        connectionString: builder.Configuration.GetConnectionString("CoreConnection") ?? "",
+var healthChecksBuilder = builder.Services.AddHealthChecks();
+if (dbProvider == "PostgreSQL")
+{
+    healthChecksBuilder.AddNpgSql(
+        connectionString: connectionString,
         name: "database",
-        tags: new[] { "db", "sql", "sqlserver" }
-    );
+        tags: new[] { "db", "sql", "npgsql" });
+}
+else
+{
+    healthChecksBuilder.AddSqlServer(
+        connectionString: connectionString,
+        name: "database",
+        tags: new[] { "db", "sql", "sqlserver" });
+}
 
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient();
@@ -265,10 +320,19 @@ builder.Services.AddScoped<sisapi.application.Services.Reports.Strategies.Compan
 
 builder.Services.AddControllers();
 
+// ── Version: read from the env var baked into the image at build time ──
+// Set by `ENV APP_VERSION=${VERSION}` in the Dockerfile — cannot be overridden at runtime.
+var appVersion = Environment.GetEnvironmentVariable("APP_VERSION") ?? "dev";
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
-    options.SwaggerDoc("v1", new OpenApiInfo { Title = "SisApi", Version = "v1" });
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "SisApi",
+        Version = appVersion,
+        Description = $"Servicio de autenticación y acceso · v{appVersion}"
+    });
 
    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
@@ -296,6 +360,7 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
+
 var app = builder.Build();
 
 // ── MUST be first: tells ASP.NET the real scheme is HTTPS (Traefik terminates TLS) ──
@@ -319,10 +384,45 @@ using (var scope = app.Services.CreateScope())
     {
         var context = services.GetRequiredService<CoreDbContext>();
 
-        logger.LogInformation("Applying database migrations...");
-        await context.Database.MigrateAsync();
-        logger.LogInformation("Database migrations applied successfully.");
-        
+        if (dbProvider == "PostgreSQL")
+        {
+            // PostgreSQL: auto-apply migrations on startup (creates schema on fresh installs)
+            logger.LogInformation("Applying database migrations (PostgreSQL)...");
+            await context.Database.MigrateAsync();
+            logger.LogInformation("Database migrations applied successfully.");
+        }
+        else
+        {
+            // SQL Server: schema is managed externally via the existing migrations.
+            // Only verify connectivity — do NOT call MigrateAsync (snapshot mismatch due to provider switch).
+            logger.LogInformation("SQL Server mode: skipping auto-migration (schema managed externally).");
+            
+            // Mask password in log for security
+            var rawCs = connectionString;
+            var maskedCs = System.Text.RegularExpressions.Regex.Replace(
+                rawCs, @"(Password|PWD)=([^;]+)", "$1=***", 
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            logger.LogInformation("Connecting to: {ConnectionString}", maskedCs);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                var canConnect = await context.Database.CanConnectAsync(cts.Token);
+                if (!canConnect)
+                    logger.LogWarning("SQL Server connection returned false — DB may be unavailable. App will start but DB-dependent endpoints will fail.");
+                else
+                    logger.LogInformation("SQL Server connection verified successfully.");
+            }
+            catch (OperationCanceledException)
+            {
+                logger.LogWarning("SQL Server connection timed out after 15s. App will start but DB-dependent endpoints will fail. Check firewall/VPN access to the SQL Server host.");
+            }
+            catch (Exception dbEx)
+            {
+                logger.LogWarning(dbEx, "SQL Server connection failed. App will start but DB-dependent endpoints will fail.");
+            }
+        }
+
         var seeder = services.GetRequiredService<DatabaseSeeder>();
         await seeder.SeedAsync();
         logger.LogInformation("Database seeding completed successfully.");
@@ -337,11 +437,11 @@ using (var scope = app.Services.CreateScope())
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
-    c.SwaggerEndpoint("/swagger/v1/swagger.json", "SisApi v1");
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", $"SisApi v{appVersion}");
     c.RoutePrefix = "swagger"; 
 });
 
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", timestamp = DateTime.UtcNow }))
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", version = appVersion, timestamp = DateTime.UtcNow }))
     .AllowAnonymous();
 
 // ── Debug: what auth info does the API actually receive? ──
@@ -388,9 +488,23 @@ if (!app.Environment.IsProduction())
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health/ready");
 
 app.MapControllers();
 
-app.Run();
+try
+{
+    Log.Information("Iniciando sisapi v{Version}...", appVersion);
+    app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "La aplicación terminó inesperadamente.");
+    throw;
+}
+finally
+{
+    // Asegura que todos los logs pendientes sean escritos al archivo antes de cerrar
+    Log.CloseAndFlush();
+}
 

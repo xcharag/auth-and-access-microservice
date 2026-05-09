@@ -1,0 +1,93 @@
+# ============================================================
+# DOCKER COMPOSE — PRUEBAS LOCALES (Docker Desktop)
+# ============================================================
+# Uso:
+#   docker compose -f docker-compose.local.yml up --build
+#   docker compose -f docker-compose.local.yml down
+#   docker compose -f docker-compose.local.yml down -v   ← borra volúmenes también
+#
+# Diferencias con producción:
+#   - La imagen de sisapi se COMPILA localmente (no se jala del registry)
+#   - PostgreSQL expone el puerto 5432 al host para conectarse con
+#     DBeaver, DataGrip o pgAdmin desde tu PC
+#   - Las credenciales vienen de credenciales.local.env
+#   - ASPNETCORE_ENVIRONMENT=Development (habilita Swagger, logs verbosos)
+#   - No hay Gateway: acceder directamente a http://localhost:8080
+#
+# Una vez levantado puedes acceder a:
+#   Swagger sisapi       → http://localhost:8080/swagger
+#   Health check         → http://localhost:8080/health
+#   PostgreSQL (DBeaver) → localhost:5432  user: sisapi
+# ============================================================
+
+services:
+
+  # ==========================================================
+  # Base de datos — PostgreSQL 16
+  # Puerto 5432 expuesto al host para conectar con DBeaver/DataGrip
+  # ==========================================================
+  postgres-sisapi:
+    image: postgres:16-bookworm
+    container_name: postgres-sisapi-local
+    env_file: ./credenciales.local.env
+    ports:
+      # Expuesto en 5433 para no colisionar con PostgreSQL local del host (5432)
+      - "5433:5432"
+    volumes:
+      - postgres-sisapi-local-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - sisapi-network
+
+  # ==========================================================
+  # Aplicativo sisapi — compilado desde el código local
+  # ==========================================================
+  sisapi-nibu:
+    # When APP_VERSION is set, Docker Compose uses the already-built image (sisapi-nibu:3.1.0).
+    # When APP_VERSION is not set, it builds from source with version "local-dev".
+    image: sisapi-nibu:${APP_VERSION:-local-dev}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${APP_VERSION:-local-dev}
+    container_name: sisapi-nibu-local
+    env_file: ./credenciales.local.env
+    ports:
+      - "8080:8080"
+    volumes:
+      # Logs accesibles desde la carpeta local ./logs/
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      postgres-sisapi:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    networks:
+      - sisapi-network
+
+# ============================================================
+# Red compartida — misma que usa producción para que webapinibu
+# pueda unirse con sisapi-network como red externa
+# ============================================================
+networks:
+  sisapi-network:
+    driver: bridge
+    name: sisapi-network
+
+volumes:
+  postgres-sisapi-local-data:
+    driver: local
+    name: postgres-sisapi-local-data
+

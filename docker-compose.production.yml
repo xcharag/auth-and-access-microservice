@@ -1,0 +1,103 @@
+# ============================================================
+# DOCKER COMPOSE — ENTORNO DE PRODUCCIÓN
+# Universidad / Servidor institucional
+# ============================================================
+# Instrucciones:
+#   1. Completar el archivo credenciales.env con los valores reales.
+#   2. Construir y publicar la imagen al registry institucional:
+#        docker build --platform linux/amd64 \
+#          -t public-docker.upsa.edu.bo/sisapi-nibu:{version} \
+#          -t public-docker.upsa.edu.bo/sisapi-nibu:latest \
+#          --build-arg VERSION={version} \
+#          --no-cache --push .
+#   3. Subir este archivo + credenciales.env al servidor y ejecutar:
+#        docker compose -f docker-compose.production.yml up -d
+#
+# NOTAS:
+#   - Solo se expone UN puerto del aplicativo (APP_PORT); el Gateway
+#     institucional maneja el SSL y enruta el subdominio asignado.
+#   - SQL Server NO expone puertos al exterior; solo acceso interno
+#     dentro de la red sisapi-network.
+#   - Los volúmenes garantizan la persistencia de datos aunque los
+#     contenedores sean reconstruidos.
+#   - Los logs del aplicativo quedan montados en ./logs/ para
+#     revisión externa sin necesidad de entrar al contenedor.
+#   - La red sisapi-network queda disponible como red externa para
+#     que otros servicios (ej. webapinibu) puedan llamar a sisapi
+#     directamente de forma interna sin pasar por el Gateway.
+# ============================================================
+
+services:
+
+  # ==========================================================
+  # Base de datos — PostgreSQL 16
+  # Nombre del servicio: postgres-sisapi
+  # (referenciado en la connection string como Host=postgres-sisapi)
+  # ==========================================================
+  postgres-sisapi:
+    image: postgres:16-bookworm
+    container_name: postgres-sisapi
+    env_file: ./credenciales.env
+    volumes:
+      # Persistencia de datos de PostgreSQL
+      - postgres-sisapi-data:/var/lib/postgresql/data
+    restart: always
+    # Sin puertos expuestos al exterior — solo acceso interno vía red sisapi-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - sisapi-network
+
+  # ==========================================================
+  # Aplicativo principal — SisApi
+  # APP_DOMAIN → subdominio asignado por el Gateway institucional
+  # APP_PORT   → puerto local que el Gateway enruta a este contenedor
+  # ==========================================================
+  sisapi-nibu:
+    image: public-docker.upsa.edu.bo/sisapi-nibu:latest
+    container_name: sisapi-nibu
+    env_file: ./credenciales.env
+    environment:
+      # Subdominio asignado — buena práctica para identificar la instancia
+      - APP_DOMAIN=${APP_DOMAIN}
+    ports:
+      # Solo se expone este puerto; el Gateway institucional enruta HTTPS aquí
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      # Logs del aplicativo montados externamente para revisión sin entrar al contenedor
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      postgres-sisapi:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
+    networks:
+      - sisapi-network
+
+# ============================================================
+# Red interna — los contenedores de este stack se comunican
+# entre sí sin exponer puertos al exterior.
+# Declarada con name fijo para que otros stacks (webapinibu)
+# puedan unirse a ella como red externa.
+# ============================================================
+networks:
+  sisapi-network:
+    driver: bridge
+    name: sisapi-network
+
+# ============================================================
+# Volúmenes nombrados para persistencia de datos
+# ============================================================
+volumes:
+  postgres-sisapi-data:
+    driver: local
+    name: postgres-sisapi-data
