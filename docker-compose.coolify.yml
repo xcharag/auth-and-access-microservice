@@ -2,31 +2,45 @@
 # COOLIFY DEPLOYMENT - SISAPI Docker Compose Stack
 # ============================================================
 # This file is optimized for Coolify deployment on a VPS
-# where SQL Server ALREADY EXISTS (external database).
+# where the database ALREADY EXISTS (external).
 #
-# NO SQL Server container is created here.
+# NO database container is created here.
 # NO JasperServer — will be added later when needed.
 #
-# ── DB_HOST — how to reach SQL Server from inside the container ──
-#   "host.docker.internal" → SQL Server on the SAME VPS host OS
-#   "172.17.0.1"           → Docker bridge gateway (alternative)
-#   "<actual-IP>"          → SQL Server on a REMOTE server
-#   "sqlserver"            → ONLY if SQL Server is a Docker container
-#                             on the SAME Docker network (sqlserver-network)
+# ── DATABASE PROVIDER ───────────────────────────────────────
+#   DB_PROVIDER (default: PostgreSQL)
+#     "PostgreSQL"  → Npgsql driver
+#     "SqlServer"   → Microsoft SQL Server driver
 #
-#   ⚠️  DO NOT use "localhost" — inside the container that means
+# ── CONNECTION STRING ───────────────────────────────────────
+#   Set CONNECTION_STRING in Coolify to the full DSN for your DB.
+#
+#   PostgreSQL example:
+#     Host=postgres-host;Port=5432;Database=sisapi;Username=sisapi;Password=secret
+#
+#   SQL Server example:
+#     Server=sql-host,1433;Database=sisapi;User Id=sa;Password=secret;TrustServerCertificate=True;MultipleActiveResultSets=True
+#
+#   ⚠️  Do NOT use "localhost" — inside the container that means
 #       the container itself, not the host.
+#   ✅  Use "host.docker.internal" to reach the VPS host OS.
+#   ✅  Use the service name if the DB is on the same Docker network.
 #
 # REQUIRED ENV VARS (set in Coolify UI):
-#   DB_HOST            - See above (default: host.docker.internal)
-#   DB_PORT            - SQL Server port (default: 1433)
-#   DB_NAME            - Database name (default: sisapi)
-#   DB_USER            - Database user (default: sa)
-#   DB_PASSWORD        - Database password
+#   CONNECTION_STRING  - Full DB connection string (see formats above)
+#   DB_PROVIDER        - "PostgreSQL" or "SqlServer" (default: PostgreSQL)
 #   JWT_SECRET_KEY     - JWT signing key (min 32 chars)
 #   ALLOWED_ORIGINS    - Comma-separated allowed CORS origins
 #   COOKIE_DOMAIN      - e.g. .xchar.site (with leading dot)
 #   APP_DOMAIN         - Domain for Traefik (e.g. sisapinibu.xchar.site)
+#
+# OPTIONAL ENV VARS:
+#   INTERNAL_API_KEY   - Service-to-service API key
+#   JWT_ISSUER         - default: SisApi
+#   JWT_AUDIENCE       - default: SisApiClient
+#   JWT_EXPIRY_MINUTES - default: 10
+#   JWT_REFRESH_EXPIRY_DAYS          - default: 7
+#   JWT_REMEMBER_ME_EXPIRY_DAYS      - default: 365
 # ============================================================
 
 services:
@@ -39,21 +53,21 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:8080
-      # Database Connection (external SQL Server - already running on VPS or remote)
-      - ConnectionStrings__CoreConnection=Server=${DB_HOST:-localhost},${DB_PORT:-1433};Database=${DB_NAME:-sisapi};User Id=${DB_USER:-sa};Password=${DB_PASSWORD};TrustServerCertificate=True;MultipleActiveResultSets=True
-      - DatabaseProvider=PostgreSQL
-      # JWT Settings
+      # ── Database ──────────────────────────────────────────
+      # Set CONNECTION_STRING in Coolify to the full DSN for your DB.
+      # Set DB_PROVIDER to "PostgreSQL" or "SqlServer".
+      - ConnectionStrings__CoreConnection=${CONNECTION_STRING}
+      - DatabaseProvider=${DB_PROVIDER:-PostgreSQL}
+      # ── JWT ───────────────────────────────────────────────
       - JwtSettings__SecretKey=${JWT_SECRET_KEY}
       - JwtSettings__Issuer=${JWT_ISSUER:-SisApi}
       - JwtSettings__Audience=${JWT_AUDIENCE:-SisApiClient}
       - JwtSettings__ExpiryInMinutes=${JWT_EXPIRY_MINUTES:-10}
       - JwtSettings__RefreshTokenExpiryInDays=${JWT_REFRESH_EXPIRY_DAYS:-7}
       - JwtSettings__RememberMeRefreshTokenExpiryInDays=${JWT_REMEMBER_ME_EXPIRY_DAYS:-365}
-      # Internal service-to-service API key
+      # ── Auth & CORS ───────────────────────────────────────
       - InternalApiKey=${INTERNAL_API_KEY}
-      # CORS
       - AllowedOrigins=${ALLOWED_ORIGINS}
-      # Cookie domain for cross-subdomain auth (e.g. .xchar.site)
       - CookieDomain=${COOKIE_DOMAIN}
     restart: unless-stopped
     networks:
@@ -78,5 +92,4 @@ networks:
     name: coolify  # Coolify's default network for Traefik routing
   sqlserver-network:
     external: true
-    name: sqlserver-network  # Network created by the SQL Server stack
-
+    name: sqlserver-network  # Network shared with the SQL Server / PostgreSQL stack
