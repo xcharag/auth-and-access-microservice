@@ -41,6 +41,7 @@ services:
       - ASPNETCORE_URLS=http://+:8080
       # Database Connection (external SQL Server - already running on VPS or remote)
       - ConnectionStrings__CoreConnection=Server=${DB_HOST:-localhost},${DB_PORT:-1433};Database=${DB_NAME:-sisapi};User Id=${DB_USER:-sa};Password=${DB_PASSWORD};TrustServerCertificate=True;MultipleActiveResultSets=True
+      - DatabaseProvider=PostgreSQL
       # JWT Settings
       - JwtSettings__SecretKey=${JWT_SECRET_KEY}
       - JwtSettings__Issuer=${JWT_ISSUER:-SisApi}
